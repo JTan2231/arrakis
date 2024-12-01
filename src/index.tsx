@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Marked } from 'marked';
@@ -6,7 +6,7 @@ import { markedHighlight } from "marked-highlight";
 import hljs from 'highlight.js';
 
 import './font.css';
-import "highlight.js/styles/github.css";
+import "highlight.js/styles/base16/framer.css";
 
 const marked = new Marked(
   markedHighlight({
@@ -31,11 +31,65 @@ interface WebSocketHookOptions {
 
 interface WebSocketHookReturn {
   socket: WebSocket | null;
+  systemPrompt: string;
   lastMessage: any;
-  sendMessage: (message: string | object) => void;
+  conversations: string[];
+  loadedConversation: Message[] | null;
+  sendMessage: (message: ArrakisRequest) => void;
   connectionStatus: 'connecting' | 'connected' | 'disconnected';
   error: Error | null;
 }
+
+type Message = {
+  message_type: "System" | "User" | "Assistant";
+  content: string;
+  model: string;
+  system_prompt: string;
+};
+
+type Conversation = {
+  method: 'Completion';
+  name: string;
+  conversation: Message[];
+};
+
+type SystemPrompt = {
+  method: 'SystemPrompt';
+  content: string;
+  write: boolean;
+};
+
+type Ping = {
+  method: 'Ping';
+  body: string;
+};
+
+type Load = {
+  method: 'Load',
+  name: string;
+};
+
+type ArrakisRequest = {
+  payload: Ping | Conversation | { method: 'ConversationList' } | Load | SystemPrompt;
+};
+
+type Completion = {
+  method: 'Completion';
+  stream: boolean;
+  delta: string;
+};
+
+type ConversationList = {
+  conversations: string[];
+};
+
+type ArrakisResponse = {
+  payload: Completion | Ping | ConversationList | SystemPrompt;
+};
+
+// TODO: disgusting mixing of concerns between this and the main page
+//       should probably centralize everything dealing with message responses
+//       in here + separate away from rendering
 
 const useWebSocket = ({
   url,
@@ -43,16 +97,17 @@ const useWebSocket = ({
   maxRetries = 0
 }: WebSocketHookOptions): WebSocketHookReturn => {
   const [socket, setSocket] = useState<WebSocket | null>(null);
-  const [lastMessage, setLastMessage] = useState<any>(null);
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected');
+  const [lastMessage, setLastMessage] = useState<string>('');
+  const [systemPrompt, setSystemPrompt] = useState<string>('');
+  const [conversations, setConversations] = useState<string[]>([]);
+  const [loadedConversation, setLoadedConversation] = useState<Message[] | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected');
   const [error, setError] = useState<Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
 
   const connect = useCallback(() => {
     try {
       const ws = new WebSocket(url);
-      setSocket(ws);
-      setConnectionStatus('connecting');
 
       ws.onopen = () => {
         setConnectionStatus('connected');
@@ -62,8 +117,19 @@ const useWebSocket = ({
 
       ws.onmessage = (event) => {
         try {
-          const parsed = JSON.parse(event.data);
-          setLastMessage(parsed);
+          const response = JSON.parse(event.data) satisfies ArrakisResponse;
+          console.log(response);
+          if (response.payload.method === 'Completion') {
+            setLastMessage((response.payload satisfies Completion).delta);
+          } else if (response.payload.method === 'Ping' && connectionStatus !== 'connected') {
+            setConnectionStatus('connected');
+          } else if (response.payload.method === 'ConversationList') {
+            setConversations((response.payload satisfies ConversationList).conversations);
+          } else if (response.payload.method === 'Load') {
+            setLoadedConversation((response.payload satisfies Conversation).conversation);
+          } else if (response.payload.method === 'SystemPrompt') {
+            setSystemPrompt(response.payload.content);
+          }
         } catch {
           setLastMessage(event.data);
         }
@@ -84,21 +150,24 @@ const useWebSocket = ({
           }, retryInterval);
         }
       };
+
+      setSocket(ws);
     } catch (err) {
       setError(err instanceof Error ? err : new Error('Failed to create WebSocket connection'));
     }
   }, [url, retryCount, maxRetries, retryInterval]);
 
-  const sendMessage = useCallback((message: string | object) => {
+  const sendMessage = useCallback((message: ArrakisRequest) => {
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(typeof message === 'string' ? message : JSON.stringify(message));
     } else {
-      setError(new Error('WebSocket is not connected'));
+      console.error('WebSocket is not connected');
     }
   }, [socket]);
 
   useEffect(() => {
     connect();
+
     return () => {
       if (socket) {
         socket.close();
@@ -106,7 +175,7 @@ const useWebSocket = ({
     };
   }, [connect]);
 
-  return { socket, lastMessage, sendMessage, connectionStatus, error };
+  return { socket, systemPrompt, conversations, loadedConversation, lastMessage, sendMessage, connectionStatus, error };
 };
 
 interface Sizing {
@@ -121,51 +190,117 @@ function createSizing(value: number, unit: string): Sizing {
   };
 }
 
-function scale(scalar: number, size: Sizing): Sizing {
-  return createSizing(size.value * scalar, size.unit);
+type ReactElementOrText = React.ReactElement | string | null;
+function htmlToReactElements(htmlString: string) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlString, 'text/html');
+
+  function domToReact(node: Node): ReactElementOrText {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return node.textContent;
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const elementNode = node as HTMLElement;
+
+      const tagName = (() => {
+        const tn = elementNode.tagName.toLowerCase();
+        return tn;
+      })();
+
+      const props: Record<string, string> = {};
+      Array.from(elementNode.attributes).forEach(attr => {
+        let name = attr.name;
+        if (name === 'class') name = 'className';
+        if (name === 'for') name = 'htmlFor';
+
+        props[name] = attr.value;
+      });
+
+      const children = Array.from(elementNode.childNodes).map(domToReact);
+
+      return React.createElement(tagName, props, ...children);
+    }
+
+    return null;
+  }
+
+  return Array.from(doc.body.childNodes).map(domToReact);
 }
 
-type Message = {
-  role: string;
-  content: string;
+const escapeToHTML: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;'
 };
+
+const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).reduce((acc, [key, value]) => {
+  acc[value as string] = key;
+  return acc;
+}, {} as Record<string, string>);
 
 function MainPage() {
   const {
+    connectionStatus,
+    systemPrompt,
+    conversations,
+    loadedConversation,
     lastMessage,
     sendMessage,
-    connectionStatus,
-    error
   } = useWebSocket({
     url: 'ws://localhost:9001',
     retryInterval: 5000,
     maxRetries: 0
   });
 
-  // this setter shouldn't be called directly
-  // see setInputLines as a wrapper which calls this
-  const [inputLines, _setInputLines] = useState(1);
+  const [conversationName, setConversationName] = useState(crypto.randomUUID());
 
-  const [inputSizings, setInputSizings] = useState({
-    height: createSizing(1.25, 'em'),
+  const [selectedModal, setSelectedModal] = useState<string | null>(null);
+  const [mouseInChat, setMouseInChat] = useState<boolean>(false);
+
+  // TODO: ???
+  const [inputSizings, _] = useState({
+    height: createSizing(0, 'px'),
     padding: createSizing(0.75, 'em'),
     margin: createSizing(1, 'em'),
   });
 
-  const [usingDewey, setUsingDewey] = useState(false);
   const [messages, setMessages] = useState([] as Message[]);
 
-  const setInputLines = (lines: number) => {
-    setInputSizings({
-      ...inputSizings,
-      height: createSizing(1.25 * Math.max(1, Math.min(5, lines)) + (lines > 1 ? inputSizings.padding.value : 0), 'em')
-    });
+  const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
 
-    _setInputLines(lines);
-  };
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      sendMessage({
+        payload: {
+          method: 'SystemPrompt',
+          write: false,
+          content: '',
+        } satisfies SystemPrompt
+      } satisfies ArrakisRequest);
+
+    }
+  }, [connectionStatus]);
 
   useEffect(() => {
     const handleKeyPress = (event: any) => {
+      if (selectedModal) {
+        if (mouseInChat) {
+          (document.getElementById('chatInput') as HTMLInputElement).focus();
+          return;
+        } else {
+          // TODO: actually do something with search here
+          if (selectedModal !== 'search') {
+            (document.getElementById(selectedModal === 'search' ? 'searchInput' : (selectedModal === 'prompt' ? 'promptInput' : '')) as HTMLInputElement).focus();
+            return;
+          }
+        }
+      }
+
+      if (event.ctrlKey && event.key !== 'v') {
+        return;
+      }
+
       (document.getElementById('chatInput') as HTMLInputElement).focus();
     }
 
@@ -174,11 +309,34 @@ function MainPage() {
     return () => {
       document.removeEventListener('keydown', handleKeyPress);
     };
-  }, []);
+  }, [selectedModal, mouseInChat]);
 
   useEffect(() => {
-    // do something with last received message
+    const last = messages[messages.length - 1];
+
+    if (last) {
+      const newMessages = [...messages.slice(0, messages.length - 1)];
+
+      last.content += lastMessage;
+      newMessages.push(last);
+
+      setMessages(newMessages);
+
+      if (messagesRef.current) {
+        messagesRef.current.scrollTo({
+          top: messagesRef.current.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    }
   }, [lastMessage]);
+
+  useEffect(() => {
+    console.log('checking loaded conv:', loadedConversation);
+    if (loadedConversation) {
+      setMessages(loadedConversation);
+    }
+  }, [loadedConversation]);
 
   // TODO: need to plan out Chamber integration better
   //       i think the current plan is 
@@ -186,83 +344,343 @@ function MainPage() {
   //       + use the retrieved info in the given prompt
   //       without Dewey, this will just be a standard chat
   const sendPrompt = (e: any) => {
-    const inputElement = document.getElementById('chatInput') as HTMLInputElement;
+    const inputElement = document.getElementById('chatInput') as HTMLDivElement;
     if (e.key === 'Enter') {
       if (!e.shiftKey) {
         e.preventDefault();
-        const data = inputElement.value;
+        const data = inputElement.innerText;
 
-        // TODO: handle Dewey request/response
-        if (usingDewey) {
-          sendMessage(data);
-        }
+        const newMessages = [
+          ...messages,
+          { content: data, message_type: 'User', model: 'anthropic', system_prompt: '' } satisfies Message,
+          { content: '', message_type: 'Assistant', model: 'anthropic', system_prompt: '' } satisfies Message,
+        ];
 
-        const newMessages = [...messages, { content: data, role: 'user' }];
         setMessages(newMessages);
 
-        inputElement.value = '';
-      } else {
-        setInputLines(inputLines + 1);
-      }
-    } else if (e.key === 'Backspace') {
-      setInputLines((() => {
-        let lines = 1;
-        for (const c of inputElement.value) {
-          lines += c == '\n' ? 1 : 0;
-        }
+        sendMessage({
+          payload: {
+            method: 'Completion',
+            name: conversationName,
+            conversation: newMessages,
+          } satisfies Conversation
+        } satisfies ArrakisRequest);
 
-        return lines;
-      })());
+        inputElement.innerHTML = '';
+      }
     }
   };
+
+  useEffect(() => {
+    const pingInterval = setInterval(() => {
+      sendMessage({
+        payload: {
+          method: 'Ping',
+          body: 'ping',
+        } satisfies Ping,
+      } satisfies ArrakisRequest);
+    }, 5000);
+
+    // Clean up interval when component unmounts
+    return () => clearInterval(pingInterval);
+  }, [sendMessage]);
+
+  useEffect(() => {
+    sendMessage({
+      payload: {
+        method: 'ConversationList'
+      }
+    } satisfies ArrakisRequest);
+  }, [selectedModal]);
+
+  const getModal = () => {
+    if (selectedModal === 'search') {
+      const getConversationCallback = (c: string) => {
+        return () => {
+          sendMessage({
+            payload: {
+              method: 'Load',
+              name: c,
+            } satisfies Load
+          } satisfies ArrakisRequest);
+        };
+      };
+
+
+      return (
+        <div style={{
+          margin: '0.5rem',
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+          {/*
+          <input id="searchInput" type="text" placeholder="Search conversations" style={{
+            border: 0,
+            position: 'relative',
+            top: '1px',
+            outline: 0,
+            borderRadius: '0.5rem',
+            fontSize: '16px',
+            padding: '0.5rem',
+            marginBottom: '0.5rem',
+          }} />
+          */}
+          {conversations.map(c => (
+            <div className="buttonHover" onClick={getConversationCallback(c)} style={{
+              padding: '0.5rem',
+              cursor: 'pointer',
+              userSelect: 'none',
+              borderRadius: '0.5rem',
+            }}>
+              {c.replace('.json', '')}
+            </div>
+          ))}
+        </div>
+      );
+    } else if (selectedModal === 'prompt') {
+      return (
+        <div style={{
+          margin: '0.5rem',
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+          <textarea id="promptInput" placeholder="You are a helpful assistant." style={{
+            border: 0,
+            position: 'relative',
+            top: '1px',
+            outline: 0,
+            resize: 'none',
+            height: '45vh',
+            borderRadius: '0.5rem',
+            fontSize: '16px',
+            padding: '0.5rem',
+            marginBottom: '0.5rem',
+          }} onKeyDown={() => {
+            sendMessage({
+              payload: {
+                method: 'SystemPrompt',
+                write: true,
+                content: (document.getElementById('promptInput')! as HTMLTextAreaElement).value,
+              } satisfies SystemPrompt
+            } satisfies ArrakisRequest);
+          }}>{systemPrompt}</textarea>
+        </div>
+      );
+    }
+  };
+
 
   return (
     <div style={{
       height: '100vh',
       display: 'flex',
-      flexDirection: 'column',
-      width: '100%',
-      overflowY: 'auto',
+      flexDirection: 'row',
     }}>
       <div style={{
-        position: 'relative',
-        width: '40vw',
-        margin: '0 auto',
-        flex: 1,
-        paddingBottom: `calc(${inputSizings.height.toString()} + 50px)`
+        width: '5vw',
+        display: 'flex',
+        flexDirection: 'column',
+        backgroundColor: 'transparent',
+        margin: '0.5rem 0 0.5rem 0.5rem',
       }}>
-        {messages.map((m) => (
-          <div style={{
-            backgroundColor: m.role === 'user' ? '#90C3F5' : '',
-            whiteSpace: 'pre-wrap',
-            borderRadius: '0.5rem',
-            margin: '0.25rem',
-            padding: '1.5rem',
-          }} dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }} />
-        ))}
-      </div>
-      <textarea
-        id="chatInput"
-        placeholder="Send Message"
-        onKeyDown={sendPrompt}
-        style={{
-          position: 'fixed',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          bottom: '25px',
-          width: '40vw',
-          height: inputSizings.height.toString(),
-          padding: inputSizings.padding.toString(),
-          backgroundColor: '#EDEDED',
+        <div style={{
+          backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56f55e',
+          userSelect: 'none',
+          width: '24px',
+          height: '24px',
+          margin: '0.5rem',
           borderRadius: '0.5rem',
-          border: 0,
-          resize: 'none',
-          outline: 0,
-          fontSize: '16px',
-          overflow: 'hidden',
-        }}
-      />
-    </div>
+          alignSelf: 'center',
+        }} />
+        <div className="buttonHover" onClick={() => {
+          setMessages([]);
+          setConversationName(crypto.randomUUID());
+        }} style={{
+          userSelect: 'none',
+          cursor: 'pointer',
+          width: '100%',
+          height: '2rem',
+          alignSelf: 'center',
+          borderBottom: '1px solid #DFDFDF',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          textAlign: 'center',
+          margin: '0.25rem 0',
+          borderRadius: '0.5rem',
+        }}>New</div>
+        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={{
+          userSelect: 'none',
+          cursor: 'pointer',
+          width: '100%',
+          height: '2rem',
+          alignSelf: 'center',
+          borderBottom: '1px solid #DFDFDF',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          textAlign: 'center',
+          margin: '0.25rem 0',
+          borderRadius: '0.5rem',
+        }}>History</div>
+        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'model' ? 'model' : null)} style={{
+          userSelect: 'none',
+          cursor: 'pointer',
+          height: '2rem',
+          width: '100%',
+          alignSelf: 'center',
+          borderBottom: '1px solid #DFDFDF',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          textAlign: 'center',
+          margin: '0.25rem 0',
+          borderRadius: '0.5rem',
+        }}>Models</div>
+        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'prompt' ? 'prompt' : null)} style={{
+          userSelect: 'none',
+          cursor: 'pointer',
+          height: '2rem',
+          width: '100%',
+          alignSelf: 'center',
+          borderBottom: '1px solid #DFDFDF',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          textAlign: 'center',
+          margin: '0.25rem 0',
+          borderRadius: '0.5rem',
+        }}>Prompt</div>
+      </div>
+      <div className="slideOut" style={{
+        width: selectedModal ? '30vw' : 0,
+        overflow: 'hidden',
+      }}>
+        {getModal()}
+      </div>
+      <div ref={messagesRef} onMouseEnter={() => setMouseInChat(true)} onMouseLeave={() => setMouseInChat(false)} style={{
+        height: 'calc(100vh - 1rem)',
+        display: 'flex',
+        flexDirection: 'column',
+        width: 'calc(100% - 1rem)',
+        overflowY: 'auto',
+        border: '1px solid #DFDFDF',
+        margin: '0.5rem',
+        backgroundColor: '#F8F9FA',
+        borderRadius: '0.5rem',
+      }}>
+        <div style={{
+          position: 'relative',
+          width: '40vw',
+          margin: '0 auto',
+          flex: 1,
+          paddingBottom: `calc(${inputSizings.height.toString()} + 10vh)`
+        }}>
+          {messages.map((m) => {
+            const toPattern = new RegExp(
+              Object.keys(escapeToHTML)
+                .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                .join('|'),
+              'g'
+            );
+
+            let content = marked.parse(m.content.replace(toPattern, function(match) {
+              return escapeToHTML[match];
+            })) as string;
+
+            const reactElements = htmlToReactElements(content);
+
+            function modifyElements(element: any): ReactElementOrText {
+              if (typeof element === 'string') {
+                let c = element as string;
+                const fromPattern = new RegExp(
+                  Object.keys(escapeFromHTML)
+                    .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+                    .join('|'),
+                  'g'
+                );
+
+                return c.replace(fromPattern, function(match) {
+                  return escapeFromHTML[match];
+                })
+              }
+
+              const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
+              if (props.children) {
+                return React.createElement(
+                  element.type,
+                  element.props,
+                  React.Children.map(props.children, modifyElements)
+                );
+              }
+
+              return element;
+            };
+
+            const unescapedElements = reactElements.map(modifyElements);
+
+            const isUser = m.message_type === 'User';
+            return (
+              <div style={{
+                backgroundColor: isUser ? '#CDCDCD' : '',
+                borderRadius: '0.5rem',
+                margin: '0.25rem',
+                padding: '0.01rem 0.5rem',
+                fontFamily: isUser ? 'monospace' : '',
+              }}>{unescapedElements}</div>
+            );
+          })}
+        </div>
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            bottom: '3vh',
+            width: '40vw',
+            minHeight: '1rem',
+            padding: inputSizings.padding.toString(),
+            backgroundColor: '#EDEDED',
+            borderRadius: '0.5rem',
+            fontSize: '16px',
+            overflow: 'hidden',
+            display: 'flex',
+          }}
+        >
+          <button
+            className="buttonHover"
+            style={{
+              marginRight: '0.5rem',
+              height: 'fit-content',
+              border: 0,
+            }}
+          >
+            +
+          </button>
+          <div style={{
+            maxHeight: '25vh',
+            overflow: 'auto',
+            height: '100%',
+            width: '100%',
+          }}>
+            <div
+              contentEditable={true}
+              id="chatInput"
+              onKeyDown={sendPrompt}
+              style={{
+                height: '100%',
+                width: '100%',
+                border: 0,
+                outline: 0,
+                resize: 'none',
+                alignSelf: 'center',
+                backgroundColor: 'transparent',
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div >
   );
 }
 
