@@ -412,6 +412,7 @@ function MainPage() {
           margin: '0.5rem',
           display: 'flex',
           flexDirection: 'column',
+          maxHeight: 'calc(100vh - 1rem)',
         }}>
           {/*
           <input id="searchInput" type="text" placeholder="Search conversations" style={{
@@ -425,16 +426,18 @@ function MainPage() {
             marginBottom: '0.5rem',
           }} />
           */}
-          {conversations.map(c => (
-            <div className="buttonHover" onClick={getConversationCallback(c)} style={{
-              padding: '0.5rem',
-              cursor: 'pointer',
-              userSelect: 'none',
-              borderRadius: '0.5rem',
-            }}>
-              {c.replace('.json', '')}
-            </div>
-          ))}
+          <div style={{ overflow: 'auto' }}>
+            {conversations.map(c => (
+              <div className="buttonHover" onClick={getConversationCallback(c)} style={{
+                padding: '0.5rem',
+                cursor: 'pointer',
+                userSelect: 'none',
+                borderRadius: '0.5rem',
+              }}>
+                {c.replace('.json', '')}
+              </div>
+            ))}
+          </div>
         </div>
       );
     } else if (selectedModal === 'prompt') {
