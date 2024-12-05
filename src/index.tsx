@@ -3,6 +3,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Marked } from 'marked';
 import { markedHighlight } from "marked-highlight";
+import { z } from 'zod';
 import hljs from 'highlight.js';
 
 import './font.css';
@@ -32,64 +33,185 @@ interface WebSocketHookOptions {
 interface WebSocketHookReturn {
   socket: WebSocket | null;
   systemPrompt: string;
-  lastMessage: any;
-  conversations: string[];
-  loadedConversation: Message[] | null;
+  conversations: Conversation[];
+  loadedConversation: Conversation;
+  setLoadedConversation: Function;
   sendMessage: (message: ArrakisRequest) => void;
   connectionStatus: 'connecting' | 'connected' | 'disconnected';
   error: Error | null;
 }
 
-type Message = {
-  message_type: "System" | "User" | "Assistant";
-  content: string;
-  model: string;
-  system_prompt: string;
-};
+const MessageSchema = z.object({
+  message_type: z.enum(["System", "User", "Assistant"]),
+  id: z.number().nullable(),
+  content: z.string(),
+  model: z.string(),
+  system_prompt: z.string(),
+  sequence: z.number(),
+});
 
-type Conversation = {
-  method: 'Completion';
-  name: string;
-  conversation: Message[];
-};
+const ConversationSchema = z.object({
+  id: z.number().nullable(),
+  name: z.string(),
+  messages: z.array(MessageSchema),
+});
 
-type SystemPrompt = {
-  method: 'SystemPrompt';
-  content: string;
-  write: boolean;
-};
+const CompletionRequestSchema = ConversationSchema;
 
-type Ping = {
-  method: 'Ping';
-  body: string;
-};
+const SystemPromptRequestSchema = z.object({
+  content: z.string(),
+  write: z.boolean(),
+});
 
-type Load = {
-  method: 'Load',
-  name: string;
-};
+const PingRequestSchema = z.object({
+  body: z.string(),
+});
 
-type ArrakisRequest = {
-  payload: Ping | Conversation | { method: 'ConversationList' } | Load | SystemPrompt;
-};
+const LoadRequestSchema = z.object({
+  id: z.number(),
+});
 
-type Completion = {
-  method: 'Completion';
-  stream: boolean;
-  delta: string;
-};
+const ConversationListRequestSchema = z.object({});
 
-type ConversationList = {
-  conversations: string[];
-};
+const CompletionResponseSchema = z.object({
+  stream: z.boolean(),
+  delta: z.string(),
+  name: z.string(),
+  conversationId: z.number(),
+  requestId: z.number(),
+  responseId: z.number(),
+});
 
-type ArrakisResponse = {
-  payload: Completion | Ping | ConversationList | SystemPrompt;
-};
+const SystemPromptResponseSchema = SystemPromptRequestSchema;
+
+const PingResponseSchema = PingRequestSchema;
+
+const ConversationListResponseSchema = z.object({
+  conversations: z.array(ConversationSchema),
+});
+
+const ArrakisRequestSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal("ConversationList"),
+  }),
+  z.object({
+    method: z.literal("Ping"),
+    payload: PingRequestSchema,
+  }),
+  z.object({
+    method: z.literal("Completion"),
+    payload: CompletionRequestSchema,
+  }),
+  z.object({
+    method: z.literal("Load"),
+    payload: LoadRequestSchema,
+  }),
+  z.object({
+    method: z.literal("SystemPrompt"),
+    payload: SystemPromptRequestSchema,
+  }),
+]);
+
+const ArrakisResponseSchema = z.discriminatedUnion("method", [
+  z.object({
+    method: z.literal("ConversationList"),
+    payload: ConversationListResponseSchema,
+  }),
+  z.object({
+    method: z.literal("Ping"),
+    payload: PingResponseSchema,
+  }),
+  z.object({
+    method: z.literal("Completion"),
+    payload: CompletionResponseSchema,
+  }),
+  z.object({
+    method: z.literal("SystemPrompt"),
+    payload: SystemPromptResponseSchema,
+  }),
+]);
+
+type Message = z.infer<typeof MessageSchema>;
+type Conversation = z.infer<typeof ConversationSchema>;
+type CompletionRequest = z.infer<typeof CompletionRequestSchema>;
+type SystemPromptRequest = z.infer<typeof SystemPromptRequestSchema>;
+type PingRequest = z.infer<typeof PingRequestSchema>;
+type LoadRequest = z.infer<typeof LoadRequestSchema>;
+type ConversationListRequest = z.infer<typeof ConversationListRequestSchema>;
+type CompletionResponse = z.infer<typeof CompletionResponseSchema>;
+type SystemPromptResponse = z.infer<typeof SystemPromptResponseSchema>;
+type PingResponse = z.infer<typeof PingResponseSchema>;
+type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
+type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
+type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
 
 // TODO: disgusting mixing of concerns between this and the main page
 //       should probably centralize everything dealing with message responses
 //       in here + separate away from rendering
+
+interface TitleCaseOptions {
+  preserveAcronyms?: boolean;
+  handleHyphens?: boolean;
+  customMinorWords?: string[];
+}
+
+function formatTitle(input: string, options: TitleCaseOptions = {}): string {
+  if (!input) return '';
+
+  const {
+    preserveAcronyms = true,
+    handleHyphens = true,
+    customMinorWords = [],
+  } = options;
+
+  const MINOR_WORDS = new Set([
+    'a', 'an', 'the', 'and', 'but', 'or', 'nor', 'for', 'yet', 'so',
+    'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+    ...customMinorWords
+  ]);
+
+  const isAcronym = (word: string): boolean => {
+    return /^[A-Z0-9]+$/.test(word);
+  };
+
+  const capitalizeWord = (word: string, forceCapitalize: boolean = false): string => {
+    if (preserveAcronyms && isAcronym(word)) {
+      return word;
+    }
+
+    const wordLower = word.toLowerCase();
+
+    if (forceCapitalize || !MINOR_WORDS.has(wordLower)) {
+      return word.charAt(0).toUpperCase() + wordLower.slice(1);
+    }
+
+    return wordLower;
+  };
+
+  const processHyphenatedWord = (word: string, forceCapitalize: boolean): string => {
+    if (!handleHyphens) return capitalizeWord(word, forceCapitalize);
+
+    return word = word
+      .split('-')
+      .map((part, index) => capitalizeWord(part, index === 0 && forceCapitalize))
+      .join('-');
+  };
+
+  const words = input.split(/\s+/);
+
+  const capitalizedWords = words.map((word, index) => {
+    const isFirst = index === 0;
+    const isLast = index === words.length - 1;
+
+    return processHyphenatedWord(word, isFirst || isLast);
+  });
+
+  return capitalizedWords.join(' ').replace('.json', '').replaceAll('_', ' ');
+}
+
+function conversationDefault(): Conversation {
+  return ConversationSchema.parse({ id: null, name: crypto.randomUUID(), messages: [] });
+}
 
 const useWebSocket = ({
   url,
@@ -97,10 +219,9 @@ const useWebSocket = ({
   maxRetries = 0
 }: WebSocketHookOptions): WebSocketHookReturn => {
   const [socket, setSocket] = useState<WebSocket | null>(null);
-  const [lastMessage, setLastMessage] = useState<string>('');
   const [systemPrompt, setSystemPrompt] = useState<string>('');
-  const [conversations, setConversations] = useState<string[]>([]);
-  const [loadedConversation, setLoadedConversation] = useState<Message[] | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loadedConversation, setLoadedConversation] = useState<Conversation>(conversationDefault());
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected'>('disconnected');
   const [error, setError] = useState<Error | null>(null);
   const [retryCount, setRetryCount] = useState(0);
@@ -118,20 +239,35 @@ const useWebSocket = ({
       ws.onmessage = (event) => {
         try {
           const response = JSON.parse(event.data) satisfies ArrakisResponse;
-          console.log(response);
           if (response.payload.method === 'Completion') {
-            setLastMessage((response.payload satisfies Completion).delta);
+            setLoadedConversation(prev => {
+              const completion = CompletionResponseSchema.parse(response.payload);
+
+              const lcm = prev.messages;
+              const newMessages = [...lcm.slice(0, lcm.length - 1)];
+
+              const last = lcm[lcm.length - 1];
+              last.content += completion.delta;
+              last.id = completion.responseId;
+
+              newMessages[newMessages.length - 1].id = completion.requestId;
+              newMessages.push(last);
+
+              return { id: completion.conversationId, name: completion.name, messages: newMessages };
+            });
           } else if (response.payload.method === 'Ping' && connectionStatus !== 'connected') {
             setConnectionStatus('connected');
           } else if (response.payload.method === 'ConversationList') {
-            setConversations((response.payload satisfies ConversationList).conversations);
+            const conversationList = ConversationListResponseSchema.parse(response.payload);
+            setConversations(conversationList.conversations);
           } else if (response.payload.method === 'Load') {
-            setLoadedConversation((response.payload satisfies Conversation).conversation);
+            const conversation = ConversationSchema.parse(response.payload);
+            setLoadedConversation(conversation);
           } else if (response.payload.method === 'SystemPrompt') {
             setSystemPrompt(response.payload.content);
           }
-        } catch {
-          setLastMessage(event.data);
+        } catch (error) {
+          console.log(error);
         }
       };
 
@@ -175,7 +311,16 @@ const useWebSocket = ({
     };
   }, [connect]);
 
-  return { socket, systemPrompt, conversations, loadedConversation, lastMessage, sendMessage, connectionStatus, error };
+  return {
+    socket,
+    systemPrompt,
+    conversations,
+    loadedConversation,
+    setLoadedConversation,
+    sendMessage,
+    connectionStatus,
+    error
+  };
 };
 
 interface Sizing {
@@ -245,7 +390,7 @@ function MainPage() {
     systemPrompt,
     conversations,
     loadedConversation,
-    lastMessage,
+    setLoadedConversation,
     sendMessage,
   } = useWebSocket({
     url: 'ws://localhost:9001',
@@ -253,10 +398,11 @@ function MainPage() {
     maxRetries: 0
   });
 
-  const [conversationName, setConversationName] = useState(crypto.randomUUID());
-
   const [selectedModal, setSelectedModal] = useState<string | null>(null);
   const [mouseInChat, setMouseInChat] = useState<boolean>(false);
+
+  const titleDefault = () => ({ title: '', index: 0 });
+  const [displayedTitle, setDisplayedTitle] = useState<{ title: string; index: number; }>(titleDefault());
 
   // TODO: ???
   const [inputSizings, _] = useState({
@@ -265,18 +411,16 @@ function MainPage() {
     margin: createSizing(1, 'em'),
   });
 
-  const [messages, setMessages] = useState([] as Message[]);
-
   const messagesRef = useRef() as React.MutableRefObject<HTMLDivElement>;
 
   useEffect(() => {
     if (connectionStatus === 'connected') {
       sendMessage({
+        method: 'SystemPrompt',
         payload: {
-          method: 'SystemPrompt',
           write: false,
           content: '',
-        } satisfies SystemPrompt
+        } satisfies SystemPromptRequest
       } satisfies ArrakisRequest);
 
     }
@@ -311,31 +455,43 @@ function MainPage() {
     };
   }, [selectedModal, mouseInChat]);
 
+  function isGuid(str: string): boolean {
+    const guidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return guidRegex.test(str);
+  }
+
   useEffect(() => {
-    const last = messages[messages.length - 1];
+    if (messagesRef.current) {
+      messagesRef.current.scrollTo({
+        top: messagesRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
 
-    if (last) {
-      const newMessages = [...messages.slice(0, messages.length - 1)];
+    let intervalId: any = null;
+    if (!isGuid(loadedConversation.name)) {
+      const intervalId = setInterval(() => {
+        const conversationName = loadedConversation.name;
 
-      last.content += lastMessage;
-      newMessages.push(last);
+        if (displayedTitle.index < conversationName.length) {
+          setDisplayedTitle(prev => {
+            if (prev.index < conversationName.length) {
+              return { title: prev.title + conversationName[prev.index], index: prev.index + 1 };
+            } else {
+              return prev;
+            }
+          });
+        } else {
+          clearInterval(intervalId);
+        }
+      }, 50);
+    }
 
-      setMessages(newMessages);
-
-      if (messagesRef.current) {
-        messagesRef.current.scrollTo({
-          top: messagesRef.current.scrollHeight,
-          behavior: 'smooth'
-        });
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
       }
-    }
-  }, [lastMessage]);
-
-  useEffect(() => {
-    console.log('checking loaded conv:', loadedConversation);
-    if (loadedConversation) {
-      setMessages(loadedConversation);
-    }
+    };
   }, [loadedConversation]);
 
   // TODO: need to plan out Chamber integration better
@@ -350,20 +506,37 @@ function MainPage() {
         e.preventDefault();
         const data = inputElement.innerText;
 
+        const messages = loadedConversation.messages;
         const newMessages = [
           ...messages,
-          { content: data, message_type: 'User', model: 'anthropic', system_prompt: '' } satisfies Message,
-          { content: '', message_type: 'Assistant', model: 'anthropic', system_prompt: '' } satisfies Message,
+          {
+            id: messages.length > 0 ? messages[messages.length - 1].id! + 1 : null,
+            content: data,
+            message_type: 'User',
+            model: 'anthropic',
+            system_prompt: '',
+            sequence: messages.length
+          } satisfies Message,
+          {
+            id: messages.length > 0 ? messages[messages.length - 1].id! + 2 : null,
+            content: '',
+            message_type: 'Assistant',
+            model: 'anthropic',
+            system_prompt: '',
+            sequence: messages.length + 1
+          } satisfies Message,
         ];
 
-        setMessages(newMessages);
+        const newConversation = {
+          ...loadedConversation,
+          messages: newMessages,
+        };
+
+        setLoadedConversation(newConversation);
 
         sendMessage({
-          payload: {
-            method: 'Completion',
-            name: conversationName,
-            conversation: newMessages,
-          } satisfies Conversation
+          method: 'Completion',
+          payload: newConversation,
         } satisfies ArrakisRequest);
 
         inputElement.innerHTML = '';
@@ -373,12 +546,12 @@ function MainPage() {
 
   useEffect(() => {
     const pingInterval = setInterval(() => {
-      sendMessage({
+      sendMessage(ArrakisRequestSchema.parse({
+        method: 'Ping',
         payload: {
-          method: 'Ping',
           body: 'ping',
-        } satisfies Ping,
-      } satisfies ArrakisRequest);
+        } satisfies PingRequest,
+      }));
     }, 5000);
 
     // Clean up interval when component unmounts
@@ -387,21 +560,21 @@ function MainPage() {
 
   useEffect(() => {
     sendMessage({
-      payload: {
-        method: 'ConversationList'
-      }
+      method: 'ConversationList',
     } satisfies ArrakisRequest);
   }, [selectedModal]);
 
   const getModal = () => {
     if (selectedModal === 'search') {
-      const getConversationCallback = (c: string) => {
+      const getConversationCallback = (id: number) => {
         return () => {
+          setDisplayedTitle(titleDefault());
+          setSelectedModal(null);
           sendMessage({
+            method: 'Load',
             payload: {
-              method: 'Load',
-              name: c,
-            } satisfies Load
+              id,
+            } satisfies LoadRequest
           } satisfies ArrakisRequest);
         };
       };
@@ -413,28 +586,18 @@ function MainPage() {
           display: 'flex',
           flexDirection: 'column',
         }}>
-          {/*
-          <input id="searchInput" type="text" placeholder="Search conversations" style={{
-            border: 0,
-            position: 'relative',
-            top: '1px',
-            outline: 0,
-            borderRadius: '0.5rem',
-            fontSize: '16px',
-            padding: '0.5rem',
-            marginBottom: '0.5rem',
-          }} />
-          */}
-          {conversations.map(c => (
-            <div className="buttonHover" onClick={getConversationCallback(c)} style={{
-              padding: '0.5rem',
-              cursor: 'pointer',
-              userSelect: 'none',
-              borderRadius: '0.5rem',
-            }}>
-              {c.replace('.json', '')}
-            </div>
-          ))}
+          {conversations.map(c => {
+            return (
+              <div className="buttonHover" onClick={getConversationCallback(c.id!)} style={{
+                padding: '0.5rem',
+                cursor: 'pointer',
+                userSelect: 'none',
+                borderRadius: '0.5rem',
+              }}>
+                {formatTitle(c.name)}
+              </div>
+            );
+          })}
         </div>
       );
     } else if (selectedModal === 'prompt') {
@@ -457,11 +620,11 @@ function MainPage() {
             marginBottom: '0.5rem',
           }} onKeyDown={() => {
             sendMessage({
+              method: 'SystemPrompt',
               payload: {
-                method: 'SystemPrompt',
                 write: true,
                 content: (document.getElementById('promptInput')! as HTMLTextAreaElement).value,
-              } satisfies SystemPrompt
+              } satisfies SystemPromptRequest
             } satisfies ArrakisRequest);
           }}>{systemPrompt}</textarea>
         </div>
@@ -493,8 +656,8 @@ function MainPage() {
           alignSelf: 'center',
         }} />
         <div className="buttonHover" onClick={() => {
-          setMessages([]);
-          setConversationName(crypto.randomUUID());
+          setLoadedConversation(conversationDefault());
+          setDisplayedTitle(titleDefault());
         }} style={{
           userSelect: 'none',
           cursor: 'pointer',
@@ -523,6 +686,7 @@ function MainPage() {
           margin: '0.25rem 0',
           borderRadius: '0.5rem',
         }}>History</div>
+        { /*
         <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'model' ? 'model' : null)} style={{
           userSelect: 'none',
           cursor: 'pointer',
@@ -551,6 +715,7 @@ function MainPage() {
           margin: '0.25rem 0',
           borderRadius: '0.5rem',
         }}>Prompt</div>
+      */ }
       </div>
       <div className="slideOut" style={{
         width: selectedModal ? '30vw' : 0,
@@ -570,13 +735,19 @@ function MainPage() {
         borderRadius: '0.5rem',
       }}>
         <div style={{
+          position: 'sticky',
+          top: '0.5rem',
+          marginLeft: '0.5rem',
+          fontWeight: 'bold',
+        }}>{formatTitle(displayedTitle.title)}</div>
+        <div style={{
           position: 'relative',
           width: '40vw',
           margin: '0 auto',
           flex: 1,
           paddingBottom: `calc(${inputSizings.height.toString()} + 10vh)`
         }}>
-          {messages.map((m) => {
+          {loadedConversation.messages.map((m) => {
             const toPattern = new RegExp(
               Object.keys(escapeToHTML)
                 .map(key => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -584,7 +755,7 @@ function MainPage() {
               'g'
             );
 
-            let content = marked.parse(m.content.replace(toPattern, function(match) {
+            let content = marked.parse(m.content.replace(toPattern, function (match) {
               return escapeToHTML[match];
             })) as string;
 
@@ -600,7 +771,7 @@ function MainPage() {
                   'g'
                 );
 
-                return c.replace(fromPattern, function(match) {
+                return c.replace(fromPattern, function (match) {
                   return escapeFromHTML[match];
                 })
               }
