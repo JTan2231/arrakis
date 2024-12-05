@@ -585,6 +585,7 @@ function MainPage() {
           margin: '0.5rem',
           display: 'flex',
           flexDirection: 'column',
+          maxHeight: 'calc(100vh - 1rem)',
         }}>
           {conversations.map(c => {
             return (
