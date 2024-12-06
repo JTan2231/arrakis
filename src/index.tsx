@@ -41,11 +41,45 @@ interface WebSocketHookReturn {
   error: Error | null;
 }
 
+const OpenAIModelSchema = z.enum([
+  "gpt-4o",
+  "gpt-4o-mini",
+  "o1-preview",
+  "o1-mini",
+]);
+
+const GroqModelSchema = z.enum([
+  "llama3-70b-8192",
+]);
+
+const AnthropicModelSchema = z.enum([
+  "claude-3-opus-20240229",
+  "claude-3-sonnet-20240229",
+  "claude-3-haiku-20240307",
+  "claude-3-5-sonnet-latest",
+  "claude-3-5-haiku-latest",
+]);
+
+const APISchema = z.discriminatedUnion("provider", [
+  z.object({
+    provider: z.literal("openai"),
+    model: OpenAIModelSchema,
+  }),
+  z.object({
+    provider: z.literal("groq"),
+    model: GroqModelSchema,
+  }),
+  z.object({
+    provider: z.literal("anthropic"),
+    model: AnthropicModelSchema,
+  }),
+]);
+
 const MessageSchema = z.object({
   message_type: z.enum(["System", "User", "Assistant"]),
   id: z.number().nullable(),
   content: z.string(),
-  model: z.string(),
+  api: APISchema,
   system_prompt: z.string(),
   sequence: z.number(),
 });
@@ -131,6 +165,10 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
   }),
 ]);
 
+type API = z.infer<typeof APISchema>;
+type OpenAIModel = z.infer<typeof OpenAIModelSchema>;
+type GroqModel = z.infer<typeof GroqModelSchema>;
+type AnthropicModel = z.infer<typeof AnthropicModelSchema>;
 type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
 type CompletionRequest = z.infer<typeof CompletionRequestSchema>;
@@ -384,6 +422,80 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
   return acc;
 }, {} as Record<string, string>);
 
+const PopupButton = (props: { modelCallback: Function }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const popupRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent | any) => {
+      if (
+        popupRef.current &&
+        !popupRef.current.contains(event.target as Node) &&
+        buttonRef.current &&
+        !buttonRef.current.contains(event.target as Node)
+      ) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside as any);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside as any);
+    };
+  }, []);
+
+  return (
+    <div
+      ref={buttonRef}
+      onClick={() => setIsOpen(!isOpen)}
+      className="buttonHoverLight"
+      style={{
+        padding: '0.5rem',
+        userSelect: 'none',
+        cursor: 'pointer',
+        border: '1px solid #EDEDED',
+        borderRadius: '0.25rem',
+      }}>
+      Models
+
+      {
+        isOpen && (
+          <div
+            ref={popupRef}
+            className="popup-content"
+          >
+            {
+              [
+                { model: "gpt-4o", provider: "openai" },
+                { model: "gpt-4o-mini", provider: "openai" },
+                { model: "o1-preview", provider: "openai" },
+                { model: "o1-mini", provider: "openai" },
+                { model: "llama3-70b-8192", provider: "groq" },
+                { model: "claude-3-opus-20240229", provider: "anthropic" },
+                { model: "claude-3-sonnet-20240229", provider: "anthropic" },
+                { model: "claude-3-haiku-20240307", provider: "anthropic" },
+                { model: "claude-3-5-sonnet-latest", provider: "anthropic" },
+                { model: "claude-3-5-haiku-latest", provider: "anthropic" }
+              ].map(m => (
+                <div
+                  onClick={() => props.modelCallback(m)}
+                  className="buttonHover"
+                  style={{
+                    textWrap: 'nowrap',
+                    padding: '0.5rem',
+                  }}>
+                  {m.model}
+                </div>
+              ))
+            }
+          </div>
+        )
+      }
+    </div >
+  );
+};
+
 function MainPage() {
   const {
     connectionStatus,
@@ -400,6 +512,8 @@ function MainPage() {
 
   const [selectedModal, setSelectedModal] = useState<string | null>(null);
   const [mouseInChat, setMouseInChat] = useState<boolean>(false);
+
+  const [model, setModel] = useState<API>({ provider: 'anthropic', model: 'claude-3-5-sonnet-latest' });
 
   const titleDefault = () => ({ title: '', index: 0 });
   const [displayedTitle, setDisplayedTitle] = useState<{ title: string; index: number; }>(titleDefault());
@@ -470,7 +584,7 @@ function MainPage() {
 
     let intervalId: any = null;
     if (!isGuid(loadedConversation.name)) {
-      const intervalId = setInterval(() => {
+      intervalId = setInterval(() => {
         const conversationName = loadedConversation.name;
 
         if (displayedTitle.index < conversationName.length) {
@@ -513,7 +627,7 @@ function MainPage() {
             id: messages.length > 0 ? messages[messages.length - 1].id! + 1 : null,
             content: data,
             message_type: 'User',
-            model: 'anthropic',
+            api: model,
             system_prompt: '',
             sequence: messages.length
           } satisfies Message,
@@ -521,7 +635,7 @@ function MainPage() {
             id: messages.length > 0 ? messages[messages.length - 1].id! + 2 : null,
             content: '',
             message_type: 'Assistant',
-            model: 'anthropic',
+            api: model,
             system_prompt: '',
             sequence: messages.length + 1
           } satisfies Message,
@@ -808,7 +922,7 @@ function MainPage() {
             position: 'fixed',
             left: '50%',
             transform: 'translateX(-50%)',
-            bottom: '3vh',
+            bottom: '1rem',
             width: '40vw',
             minHeight: '1rem',
             padding: inputSizings.padding.toString(),
@@ -850,6 +964,14 @@ function MainPage() {
               }}
             />
           </div>
+        </div>
+        <div style={{
+          position: 'sticky',
+          marginLeft: '0.5rem',
+          bottom: '0.5rem',
+          width: 'fit-content',
+        }}>
+          <PopupButton modelCallback={setModel} />
         </div>
       </div>
     </div >

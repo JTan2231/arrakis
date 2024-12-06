@@ -48,7 +48,37 @@ li {
     background-color: #F8F9FA;
 }
 
+.buttonHoverLight {
+    background-color: transparent;
+    transition: background-color 0.15s ease;
+}
+
+.buttonHoverLight:hover {
+    background-color: #EDEDED;
+}
 
 .slideOut {
     transition: width 0.5s ease;
+}
+
+.popup-container {
+    position: relative;
+    display: inline-block;
+}
+
+.popup-button {
+    padding: 10px 20px;
+    cursor: pointer;
+}
+
+.popup-content {
+    position: absolute;
+    bottom: 100%;
+    width: fit-content;
+    margin-bottom: 10px;
+
+    background-color: white;
+    padding: 0.5rem;
+    border-radius: 4px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
 }
