@@ -1,5 +1,12 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');
 
+@font-face {
+    font-family: 'Katex Main';
+    src: url('./KaTeX_Main-Bold.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+}
+
 div {
     font-family: 'DM Sans';
 }
@@ -10,7 +17,7 @@ textarea {
 
 body {
     margin: 0;
-    background-color: #ebedf5;
+    background-color: #FFFFFF;
 }
 
 h1,
@@ -26,7 +33,15 @@ h6 {
 }
 
 pre {
-    margin: 0 0 2rem 0;
+    padding: 1rem;
+    margin: 0;
+    border-radius: 0.5rem;
+    background-color: #F2F1EF;
+}
+
+code {
+    padding: 0 !important;
+    background-color: transparent !important;
 }
 
 p {
@@ -54,7 +69,7 @@ li {
 }
 
 .buttonHoverLight:hover {
-    background-color: #EDEDED;
+    background-color: #EFECEA;
 }
 
 .slideOut {
@@ -81,4 +96,84 @@ li {
     padding: 0.5rem;
     border-radius: 4px;
     box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+}
+
+/* alabaster */
+.hljs {
+    display: block;
+    overflow-x: auto;
+    padding: 1.25rem 1.5rem 2rem;
+    color: #000;
+    background: #f7f7f7;
+}
+
+.hljs-comment {
+    color: #aa3731;
+}
+
+.hljs-string,
+.hljs-meta-string,
+.hljs-regexp {
+    color: #448c27;
+}
+
+.hljs-number,
+.hljs-literal {
+    color: #7a3e9d;
+}
+
+.hljs-title {
+    color: #325cc0;
+}
+
+.hljs-deletion {
+    background-color: #ffdddd;
+    color: #434343;
+}
+
+.hljs-addition {
+    background-color: #ddffdd;
+    color: #434343;
+}
+
+/* end alabaster */
+
+.messageOptions {
+    color: #ADADAD;
+    transition: color 0.3s ease;
+}
+
+.messageOptions:hover {
+    color: #0D0D0D;
+}
+
+.messageOptionsRow {
+    color: #ADADAD;
+    transition: color 0.3s ease;
+}
+
+.messageOptionsRow:hover {
+    color: #0D0D0D;
+}
+
+.messageOptions .messageOptionsRow {
+    transform: translateX(100%);
+    transition: all 0.3s ease;
+}
+
+.messageOptions:hover .messageOptionsRow {
+    transform: translateX(0%);
+}
+
+.katex {
+    line-height: 1.2rem;
+}
+
+mo,
+mi {
+    font: 1.21rem 'Katex Main';
+}
+
+.katex-html {
+    display: none;
 }

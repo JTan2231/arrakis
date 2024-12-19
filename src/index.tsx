@@ -1,24 +1,29 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { Marked } from 'marked';
-import { markedHighlight } from "marked-highlight";
+// import { Marked } from 'marked';
+import MarkdownIt from 'markdown-it';
+import markdownItKatex from 'markdown-it-katex';
+// import { markedHighlight } from "marked-highlight";
 import { z } from 'zod';
 import hljs from 'highlight.js';
 
 import './font.css';
-import "highlight.js/styles/base16/framer.css";
+import './buttons.css';
 
-const marked = new Marked(
-  markedHighlight({
-    emptyLangClass: 'hljs',
-    langPrefix: 'hljs language-',
-    highlight(code, lang, info) {
-      const language = hljs.getLanguage(lang) ? lang : 'plaintext';
-      return hljs.highlight(code, { language }).value;
+const md = new MarkdownIt({
+  html: true,
+  linkify: true,
+  typographer: true,
+  highlight: function (str, lang) {
+    if (lang && hljs.getLanguage(lang)) {
+      try {
+        return hljs.highlight(str, { language: lang }).value;
+      } catch (__) { }
     }
-  })
-);
+    return ''; // use external default escaping
+  }
+}).use(markdownItKatex);
 
 const root = ReactDOM.createRoot(
   document.getElementById('root') as HTMLElement
@@ -105,7 +110,10 @@ const LoadRequestSchema = z.object({
   id: z.number(),
 });
 
-const ConversationListRequestSchema = z.object({});
+const ForkRequestSchema = z.object({
+  conversationId: z.number(),
+  sequence: z.number(),
+});
 
 const CompletionResponseSchema = z.object({
   stream: z.boolean(),
@@ -144,6 +152,10 @@ const ArrakisRequestSchema = z.discriminatedUnion("method", [
     method: z.literal("SystemPrompt"),
     payload: SystemPromptRequestSchema,
   }),
+  z.object({
+    method: z.literal("Fork"),
+    payload: ForkRequestSchema,
+  }),
 ]);
 
 const ArrakisResponseSchema = z.discriminatedUnion("method", [
@@ -166,20 +178,11 @@ const ArrakisResponseSchema = z.discriminatedUnion("method", [
 ]);
 
 type API = z.infer<typeof APISchema>;
-type OpenAIModel = z.infer<typeof OpenAIModelSchema>;
-type GroqModel = z.infer<typeof GroqModelSchema>;
-type AnthropicModel = z.infer<typeof AnthropicModelSchema>;
 type Message = z.infer<typeof MessageSchema>;
 type Conversation = z.infer<typeof ConversationSchema>;
-type CompletionRequest = z.infer<typeof CompletionRequestSchema>;
 type SystemPromptRequest = z.infer<typeof SystemPromptRequestSchema>;
 type PingRequest = z.infer<typeof PingRequestSchema>;
 type LoadRequest = z.infer<typeof LoadRequestSchema>;
-type ConversationListRequest = z.infer<typeof ConversationListRequestSchema>;
-type CompletionResponse = z.infer<typeof CompletionResponseSchema>;
-type SystemPromptResponse = z.infer<typeof SystemPromptResponseSchema>;
-type PingResponse = z.infer<typeof PingResponseSchema>;
-type ConversationListResponse = z.infer<typeof ConversationListResponseSchema>;
 type ArrakisRequest = z.infer<typeof ArrakisRequestSchema>;
 type ArrakisResponse = z.infer<typeof ArrakisResponseSchema>;
 
@@ -422,7 +425,7 @@ const escapeFromHTML: Record<string, string> = Object.entries(escapeToHTML).redu
   return acc;
 }, {} as Record<string, string>);
 
-const PopupButton = (props: { modelCallback: Function }) => {
+const PopupButton = (props: { model: string, modelCallback: Function }) => {
   const [isOpen, setIsOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLDivElement | null>(null);
@@ -457,7 +460,7 @@ const PopupButton = (props: { modelCallback: Function }) => {
         border: '1px solid #EDEDED',
         borderRadius: '0.25rem',
       }}>
-      Models
+      {props.model}
 
       {
         isOpen && (
@@ -549,7 +552,7 @@ function MainPage() {
         } else {
           // TODO: actually do something with search here
           if (selectedModal !== 'search') {
-            (document.getElementById(selectedModal === 'search' ? 'searchInput' : (selectedModal === 'prompt' ? 'promptInput' : '')) as HTMLInputElement).focus();
+            (document.getElementById(selectedModal === 'search' ? 'searchInput' : (selectedModal === 'systemPrompt' ? 'promptInput' : '')) as HTMLInputElement).focus();
             return;
           }
         }
@@ -557,6 +560,10 @@ function MainPage() {
 
       if (event.ctrlKey && event.key !== 'v') {
         return;
+      }
+
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
       }
 
       (document.getElementById('chatInput') as HTMLInputElement).focus();
@@ -578,7 +585,7 @@ function MainPage() {
     if (messagesRef.current) {
       messagesRef.current.scrollTo({
         top: messagesRef.current.scrollHeight,
-        behavior: 'smooth'
+        behavior: 'auto'
       });
     }
 
@@ -616,9 +623,13 @@ function MainPage() {
   const sendPrompt = (e: any) => {
     const inputElement = document.getElementById('chatInput') as HTMLDivElement;
     if (e.key === 'Enter') {
+      // chat submit
       if (!e.shiftKey) {
         e.preventDefault();
         const data = inputElement.innerText;
+        if (data.length === 0) {
+          return;
+        }
 
         const messages = loadedConversation.messages;
         const newMessages = [
@@ -700,6 +711,8 @@ function MainPage() {
           display: 'flex',
           flexDirection: 'column',
           maxHeight: 'calc(100vh - 1rem)',
+          overflowY: 'auto',
+          overflowX: 'hidden',
         }}>
           {conversations.map(c => {
             return (
@@ -708,6 +721,7 @@ function MainPage() {
                 cursor: 'pointer',
                 userSelect: 'none',
                 borderRadius: '0.5rem',
+                textWrap: 'nowrap',
               }}>
                 {formatTitle(c.name)}
               </div>
@@ -715,7 +729,7 @@ function MainPage() {
           })}
         </div>
       );
-    } else if (selectedModal === 'prompt') {
+    } else if (selectedModal === 'systemPrompt') {
       return (
         <div style={{
           margin: '0.5rem',
@@ -733,7 +747,8 @@ function MainPage() {
             fontSize: '16px',
             padding: '0.5rem',
             marginBottom: '0.5rem',
-          }} onKeyDown={() => {
+            textWrap: 'nowrap',
+          }} onBlur={() => {
             sendMessage({
               method: 'SystemPrompt',
               payload: {
@@ -747,7 +762,74 @@ function MainPage() {
     }
   };
 
+  const addMathDelimiters = (input: string) => {
+    const openChars = ['\\(', '\\['];
+    const closeChars = ['\\)', '\\]'];
 
+    let result = '';
+    let currentIndex = 0;
+
+    while (currentIndex < input.length) {
+      // Find next opening character
+      let foundOpenChar = false;
+      let openCharIndex = -1;
+      let matchedCloseChar = '';
+
+      for (let i = 0; i < openChars.length; i++) {
+        const index = input.indexOf(openChars[i], currentIndex);
+        if (index !== -1 && (openCharIndex === -1 || index < openCharIndex)) {
+          openCharIndex = index;
+          matchedCloseChar = closeChars[i];
+          foundOpenChar = true;
+        }
+      }
+
+      if (!foundOpenChar) {
+        // Add remaining text and break
+        result += input.slice(currentIndex);
+        break;
+      }
+
+      // Add text before the math content
+      result += input.slice(currentIndex, openCharIndex);
+
+      // Find closing character
+      const closeCharIndex = input.indexOf(matchedCloseChar, openCharIndex + 2);
+
+      // Extract and process math content
+      if (closeCharIndex === -1) {
+        // No closing character found
+        const mathContent = input.slice(openCharIndex + 2);
+        const hasNewline = mathContent.includes('\n');
+        result += hasNewline ? '$$' + mathContent + '$$' : '$' + mathContent + '$';
+        break;
+      } else {
+        // Closing character found
+        const mathContent = input.slice(openCharIndex + 2, closeCharIndex).trim();
+        const hasNewline = mathContent.includes('\n');
+        result += hasNewline ? '$$' + mathContent + '$$' : '$' + mathContent + '$';
+        currentIndex = closeCharIndex + 2;
+      }
+    }
+
+    return result;
+  };
+
+  const menuButtonStyle: React.CSSProperties = {
+    userSelect: 'none',
+    cursor: 'pointer',
+    width: '100%',
+    height: '2rem',
+    alignSelf: 'center',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    textAlign: 'center',
+    margin: '0.25rem 0',
+    borderRadius: '0.5rem',
+  };
+
+  // TODO: madness around centering the input with the chat
   return (
     <div style={{
       height: '100vh',
@@ -762,7 +844,7 @@ function MainPage() {
         margin: '0.5rem 0 0.5rem 0.5rem',
       }}>
         <div style={{
-          backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56f55e',
+          backgroundColor: connectionStatus === 'disconnected' ? 'red' : '#56F55E',
           userSelect: 'none',
           width: '24px',
           height: '24px',
@@ -771,66 +853,12 @@ function MainPage() {
           alignSelf: 'center',
         }} />
         <div className="buttonHover" onClick={() => {
+          setSelectedModal(null);
           setLoadedConversation(conversationDefault());
           setDisplayedTitle(titleDefault());
-        }} style={{
-          userSelect: 'none',
-          cursor: 'pointer',
-          width: '100%',
-          height: '2rem',
-          alignSelf: 'center',
-          borderBottom: '1px solid #DFDFDF',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          textAlign: 'center',
-          margin: '0.25rem 0',
-          borderRadius: '0.5rem',
-        }}>New</div>
-        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={{
-          userSelect: 'none',
-          cursor: 'pointer',
-          width: '100%',
-          height: '2rem',
-          alignSelf: 'center',
-          borderBottom: '1px solid #DFDFDF',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          textAlign: 'center',
-          margin: '0.25rem 0',
-          borderRadius: '0.5rem',
-        }}>History</div>
-        { /*
-        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'model' ? 'model' : null)} style={{
-          userSelect: 'none',
-          cursor: 'pointer',
-          height: '2rem',
-          width: '100%',
-          alignSelf: 'center',
-          borderBottom: '1px solid #DFDFDF',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          textAlign: 'center',
-          margin: '0.25rem 0',
-          borderRadius: '0.5rem',
-        }}>Models</div>
-        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'prompt' ? 'prompt' : null)} style={{
-          userSelect: 'none',
-          cursor: 'pointer',
-          height: '2rem',
-          width: '100%',
-          alignSelf: 'center',
-          borderBottom: '1px solid #DFDFDF',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          textAlign: 'center',
-          margin: '0.25rem 0',
-          borderRadius: '0.5rem',
-        }}>Prompt</div>
-      */ }
+        }} style={menuButtonStyle}>New</div>
+        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'search' ? 'search' : null)} style={menuButtonStyle}>History</div>
+        <div className="buttonHover" onClick={() => setSelectedModal(selectedModal !== 'systemPrompt' ? 'systemPrompt' : null)} style={menuButtonStyle}>System Prompt</div>
       </div>
       <div className="slideOut" style={{
         width: selectedModal ? '30vw' : 0,
@@ -844,9 +872,10 @@ function MainPage() {
         flexDirection: 'column',
         width: 'calc(100% - 1rem)',
         overflowY: 'auto',
-        border: '1px solid #DFDFDF',
+        border: '1px solid #E0DED9',
+        boxShadow: '0 0 8px rgba(28, 25, 23, 0.1)',
         margin: '0.5rem',
-        backgroundColor: '#F8F9FA',
+        backgroundColor: '#F9F8F7',
         borderRadius: '0.5rem',
       }}>
         <div style={{
@@ -870,9 +899,12 @@ function MainPage() {
               'g'
             );
 
-            let content = marked.parse(m.content.replace(toPattern, function (match) {
+            let content = m.content.replace(toPattern, function (match) {
               return escapeToHTML[match];
-            })) as string;
+            });
+
+            content = addMathDelimiters(content);
+            content = md.render(content) as string;
 
             const reactElements = htmlToReactElements(content);
 
@@ -892,6 +924,32 @@ function MainPage() {
               }
 
               const props = element.props as React.PropsWithChildren<{ [key: string]: any }>;
+
+              const input = props.style;
+
+              if (input) {
+                if (typeof input !== "string") return null;
+
+                const styleObject: { [key: string]: any } = {};
+                const styleEntries = input.split(";").filter(Boolean);
+
+                for (const entry of styleEntries) {
+                  const [property, value] = entry.split(":").map((s) => s.trim());
+                  if (property && value) {
+                    // Convert CSS property to camelCase for React style
+                    const camelCaseProperty = property.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+                    styleObject[camelCaseProperty] = value;
+                  }
+                }
+
+                return React.cloneElement(element, {
+                  style: styleObject,
+                  children: React.Children.map(props.children, (child) =>
+                    React.isValidElement(child) ? modifyElements(child) : child
+                  ),
+                });
+              }
+
               if (props.children) {
                 return React.createElement(
                   element.type,
@@ -908,41 +966,81 @@ function MainPage() {
             const isUser = m.message_type === 'User';
             return (
               <div style={{
-                backgroundColor: isUser ? '#CDCDCD' : '',
+                backgroundColor: isUser ? '#E2E0DD' : '',
                 borderRadius: '0.5rem',
                 margin: '0.25rem',
-                padding: '0.01rem 0.5rem',
-                fontFamily: isUser ? 'monospace' : '',
-              }}>{unescapedElements}</div>
+                padding: '0.01rem 0',
+                width: isUser ? 'fit-content' : '',
+                position: 'relative'
+              }}>
+                {isUser ? '' : (
+                  <p className="messageOptions" style={{
+                    position: 'absolute',
+                    transform: 'translateX(calc(-100% - 1rem))',
+                    userSelect: 'none',
+                    cursor: 'pointer',
+                    display: 'flex',
+                  }}>
+                    <div style={{
+                      width: 'fit-content',
+                      overflow: 'hidden',
+                    }}>
+                      <div className="messageOptionsRow">
+                        <div style={{
+                          padding: '0 0.5rem',
+                        }} onClick={() => {
+                          sendMessage(ArrakisRequestSchema.parse({
+                            method: 'Fork',
+                            payload: ForkRequestSchema.parse({
+                              conversationId: loadedConversation.id,
+                              sequence: m.sequence
+                            })
+                          }));
+
+                          const conversation = {
+                            ...loadedConversation,
+                            messages: loadedConversation.messages.slice(0, m.sequence + 1),
+                          };
+
+                          let last = conversation.messages[conversation.messages.length - 1];
+
+                          last.content = '';
+                          last.id = null;
+                          last.message_type = 'Assistant';
+                          last.system_prompt = systemPrompt;
+                          last.api = model;
+
+                          conversation.messages[conversation.messages.length - 1] = last;
+
+                          setLoadedConversation(conversation);
+                        }}>Regenerate</div>
+                      </div>
+                    </div>
+                    <div>•</div>
+                  </p>
+                )}
+                {unescapedElements}
+              </div>
             );
           })}
         </div>
         <div
           style={{
             position: 'fixed',
-            left: '50%',
+            // TODO: ??? where do these numbers come from
+            left: 'calc(50% + 2.5vw + 0.375rem - 0.75rem)',
             transform: 'translateX(-50%)',
             bottom: '1rem',
-            width: '40vw',
+            width: 'calc(40vw - 1.5rem)',
             minHeight: '1rem',
             padding: inputSizings.padding.toString(),
-            backgroundColor: '#EDEDED',
+            backgroundColor: '#EFECEA',
             borderRadius: '0.5rem',
             fontSize: '16px',
             overflow: 'hidden',
             display: 'flex',
           }}
         >
-          <button
-            className="buttonHover"
-            style={{
-              marginRight: '0.5rem',
-              height: 'fit-content',
-              border: 0,
-            }}
-          >
-            +
-          </button>
           <div style={{
             maxHeight: '25vh',
             overflow: 'auto',
@@ -971,7 +1069,7 @@ function MainPage() {
           bottom: '0.5rem',
           width: 'fit-content',
         }}>
-          <PopupButton modelCallback={setModel} />
+          <PopupButton model={model.model} modelCallback={setModel} />
         </div>
       </div>
     </div >

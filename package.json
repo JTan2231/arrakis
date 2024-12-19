@@ -12,6 +12,8 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "highlight.js": "^11.10.0",
+    "markdown-it": "^14.1.0",
+    "markdown-it-katex": "^2.0.3",
     "marked": "^15.0.2",
     "marked-highlight": "^2.2.1",
     "react": "^18.3.1",
@@ -44,5 +46,8 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.1.2"
   }
 }
