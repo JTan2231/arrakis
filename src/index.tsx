@@ -1,10 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-// import { Marked } from 'marked';
 import MarkdownIt from 'markdown-it';
 import markdownItKatex from 'markdown-it-katex';
-// import { markedHighlight } from "marked-highlight";
 import { z } from 'zod';
 import hljs from 'highlight.js';
 
@@ -965,62 +963,72 @@ function MainPage() {
 
             const isUser = m.message_type === 'User';
             return (
-              <div style={{
-                backgroundColor: isUser ? '#E2E0DD' : '',
-                borderRadius: '0.5rem',
-                margin: '0.25rem',
-                padding: '0.01rem 0',
-                width: isUser ? 'fit-content' : '',
-                position: 'relative'
-              }}>
-                {isUser ? '' : (
-                  <p className="messageOptions" style={{
-                    position: 'absolute',
-                    transform: 'translateX(calc(-100% - 1rem))',
-                    userSelect: 'none',
-                    cursor: 'pointer',
-                    display: 'flex',
-                  }}>
-                    <div style={{
-                      width: 'fit-content',
-                      overflow: 'hidden',
+              <>
+                <div style={{
+                  color: '#ABA7A2',
+                  fontSize: '0.7rem',
+                  marginTop: '1rem',
+                  marginLeft: '0.5rem',
+                  userSelect: 'none',
+                  marginBottom: isUser ? '' : '-0.25rem'
+                }}>{isUser ? 'You' : model.model}</div>
+                <div style={{
+                  backgroundColor: isUser ? '#E2E0DD' : '',
+                  borderRadius: '0.5rem',
+                  margin: '0 0.25rem 0.25rem 0.25rem 0.25rem',
+                  padding: '0.01rem 0',
+                  width: isUser ? 'fit-content' : '',
+                  position: 'relative'
+                }}>
+                  {isUser ? '' : (
+                    <p className="messageOptions" style={{
+                      position: 'absolute',
+                      transform: 'translateX(calc(-100% - 1rem))',
+                      userSelect: 'none',
+                      cursor: 'pointer',
+                      display: 'flex',
                     }}>
-                      <div className="messageOptionsRow">
-                        <div style={{
-                          padding: '0 0.5rem',
-                        }} onClick={() => {
-                          sendMessage(ArrakisRequestSchema.parse({
-                            method: 'Fork',
-                            payload: ForkRequestSchema.parse({
-                              conversationId: loadedConversation.id,
-                              sequence: m.sequence
-                            })
-                          }));
+                      <div style={{
+                        width: 'fit-content',
+                        overflow: 'hidden',
+                      }}>
+                        <div className="messageOptionsRow">
+                          <div style={{
+                            padding: '0 0.5rem',
+                          }} onClick={() => {
+                            sendMessage(ArrakisRequestSchema.parse({
+                              method: 'Fork',
+                              payload: ForkRequestSchema.parse({
+                                conversationId: loadedConversation.id,
+                                sequence: m.sequence
+                              })
+                            }));
 
-                          const conversation = {
-                            ...loadedConversation,
-                            messages: loadedConversation.messages.slice(0, m.sequence + 1),
-                          };
+                            const conversation = {
+                              ...loadedConversation,
+                              messages: loadedConversation.messages.slice(0, m.sequence + 1),
+                            };
 
-                          let last = conversation.messages[conversation.messages.length - 1];
+                            let last = conversation.messages[conversation.messages.length - 1];
 
-                          last.content = '';
-                          last.id = null;
-                          last.message_type = 'Assistant';
-                          last.system_prompt = systemPrompt;
-                          last.api = model;
+                            last.content = '';
+                            last.id = null;
+                            last.message_type = 'Assistant';
+                            last.system_prompt = systemPrompt;
+                            last.api = model;
 
-                          conversation.messages[conversation.messages.length - 1] = last;
+                            conversation.messages[conversation.messages.length - 1] = last;
 
-                          setLoadedConversation(conversation);
-                        }}>Regenerate</div>
+                            setLoadedConversation(conversation);
+                          }}>Regenerate</div>
+                        </div>
                       </div>
-                    </div>
-                    <div>•</div>
-                  </p>
-                )}
-                {unescapedElements}
-              </div>
+                      <div>•</div>
+                    </p>
+                  )}
+                  {unescapedElements}
+                </div>
+              </>
             );
           })}
         </div>
